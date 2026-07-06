@@ -1,0 +1,117 @@
+Handle,Title,Body (HTML),Vendor,Product Category,Type,Tags,Published,Option1 Name,Option1 Value,Variant SKU,Variant Grams,Variant Inventory Qty,Variant Price,Cost per item
+6205,6205,"<p>Product Category: Ball Bearings</p>
+<table width=""100%"">
+<tbody>
+<tr>
+<td colspan=""3"">Dimensions(mm)</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Bore Diameter</td>
+<td>25</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Outside Diameter</td>
+<td>52</td>
+</tr>
+<tr>
+<td>T</td>
+<td>Width</td>
+<td>15</td>
+</tr>
+</tbody>
+</table>",Hi-Tec Bearings,Bearings,Bearing,,TRUE,Title,Default Title,6205,500,40,100,55
+6206,6206,"<p>Product Category: Ball Bearings</p>
+<table width=""100%"">
+<tbody>
+<tr>
+<td colspan=""3"">Dimensions(mm)</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Bore Diameter</td>
+<td>30</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Outside Diameter</td>
+<td>62</td>
+</tr>
+<tr>
+<td>T</td>
+<td>Width</td>
+<td>16</td>
+</tr>
+</tbody>
+</table>",Hi-Tec Bearings,Bearings,Bearing,,TRUE,Title,Default Title,6206,500,25,120,70
+22210,22210,"<p>Product Category: Ball Bearings</p>
+<table width=""100%"">
+<tbody>
+<tr>
+<td colspan=""3"">Dimensions(mm)</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Bore Diameter</td>
+<td>50</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Outside Diameter</td>
+<td>90</td>
+</tr>
+<tr>
+<td>T</td>
+<td>Width</td>
+<td>23</td>
+</tr>
+</tbody>
+</table>",Hi-Tec Bearings,Bearings,Bearing,,TRUE,Size,22210 K,22210,500,12,300,180
+22210,,,Hi-Tec Bearings,Bearings,Bearing,,TRUE,Size,22210 E,22210,500,8,320,190
+1205,1205,"<p>Product Category: Ball Bearings</p>
+<table width=""100%"">
+<tbody>
+<tr>
+<td colspan=""3"">Dimensions(mm)</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Bore Diameter</td>
+<td>25</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Outside Diameter</td>
+<td>52</td>
+</tr>
+<tr>
+<td>T</td>
+<td>Width</td>
+<td>15</td>
+</tr>
+</tbody>
+</table>",Hi-Tec Bearings,Bearings,Bearing,,TRUE,Title,Default Title,1205,500,30,150,90
+6304-2rs,6304 2RS,"<p>Product Category: Ball Bearings</p>
+<table width=""100%"">
+<tbody>
+<tr>
+<td colspan=""3"">Dimensions(mm)</td>
+</tr>
+<tr>
+<td>d</td>
+<td>Bore Diameter</td>
+<td>20</td>
+</tr>
+<tr>
+<td>D</td>
+<td>Outside Diameter</td>
+<td>52</td>
+</tr>
+<tr>
+<td>T</td>
+<td>Width</td>
+<td>15</td>
+</tr>
+</tbody>
+</table>",Hi-Tec Bearings,Bearings,Bearing,,TRUE,Title,Default Title,6304-2RS,500,60,80,45
