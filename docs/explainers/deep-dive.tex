@@ -1,0 +1,1226 @@
+% explainer-source-hash: 57bcbdec561bab334481f03dc7f1b4d5b8f071f1c30602f865e48dc1657f0e38
+% explainer-source-commit: 40e6ab02e9e59f22535727fa3f73442500a09963
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
+
+\title{\textbf{Hi-Tec Shopify Automation}\\[0.3em]\large A Deep Dive}
+\author{Portfolio explainer, built from the repository source}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\begin{keyidea}{The whole project in one paragraph}
+A bearings retailer sells thousands of products through an online shop hosted by
+Shopify. The quantities and costs they actually trust live in a different
+spreadsheet, exported from their warehouse system. Nobody had a way to push one
+into the other, so a person did it by hand. This project is three small Python
+programs that do that reconciliation on the exported spreadsheet files. They
+never contact the shop over the network. They read a file, add columns, and
+write a new file that a human reviews before uploading it back.
+\end{keyidea}
+
+\tableofcontents
+\newpage
+
+\section{Context and the constraint that shaped everything}
+
+\subsection{Who this was for}
+
+Hi-Tec Bearings is a retailer of bearings (the metal rings that let a wheel or a
+shaft spin with low friction). They run a shop on Shopify. Their catalogue has
+thousands of product variants. This was freelance work done solo by Salman Adnan
+in 2023.
+
+\begin{jargon}{Shopify}
+A hosted e-commerce platform. A merchant does not run their own web server; they
+pay Shopify, and Shopify runs the storefront, the checkout and the product
+database. The merchant administers it through a web control panel called the
+\textbf{Shopify admin}.
+\end{jargon}
+
+\begin{jargon}{Product variant}
+One purchasable version of a product. A bearing product \code{22210} might exist
+in a \code{22210 K} version (tapered bore) and a \code{22210 E} version
+(different cage). Each is a variant. In a Shopify export, each variant is its own
+row, and the rows of one product share a \code{Handle}.
+\end{jargon}
+
+\subsection{The problem}
+
+Two spreadsheets described the same stock and disagreed:
+
+\begin{itemize}
+  \item The \textbf{stock list}, exported from the client's internal warehouse
+  system. It carries the quantity actually on the shelf and the cost actually
+  paid.
+  \item The \textbf{Shopify export}, exported from the Shopify admin. It carries
+  what the storefront currently tells customers.
+\end{itemize}
+
+Keeping the second in step with the first was manual and took hours per update
+cycle. A third irritation: useful facts about each bearing (its bore diameter,
+outside diameter and width) existed only as an HTML table buried inside the
+product description text, so the storefront could not filter or sort on them.
+
+\subsection{The constraint: no API}
+
+\begin{keyidea}{Everything here is offline file processing}
+Nothing in this project talks to Shopify over the network. There is no API
+client, no access token, no shop domain, and \file{.env.example} declares
+plainly that no environment variables are needed. The tools operate on files
+that a human has already exported.
+\end{keyidea}
+
+\begin{jargon}{API}
+Application Programming Interface. A machine-to-machine doorway into a service.
+Shopify does publish one, and a program with an access token could read and write
+products directly over the network. This project deliberately does not use it.
+\end{jargon}
+
+The working loop the client actually used:
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=8mm and 12mm]
+  \node[extbox] (store) {Shopify store\\(hosted, remote)};
+  \node[box, right=of store] (exp) {Human exports\\from Shopify admin};
+  \node[store, right=of exp] (csv) {Shopify export\\CSV / XLSX};
+  \node[box, right=of csv, fill=softgrey] (tool) {One of the three\\tools runs};
+  \node[store, below=14mm of tool] (out) {\code{updated\_*} file\\(new columns added)};
+  \node[dec, left=of out] (rev) {Human\\reviews};
+  \node[box, left=of rev] (imp) {Human re-imports\\via Shopify admin};
+
+  \node[store, above=9mm of tool] (stock) {Internal stock list\\CSV / XLSX};
+
+  \draw[flow] (store) -- (exp);
+  \draw[flow] (exp) -- (csv);
+  \draw[flow] (csv) -- (tool);
+  \draw[dflow] (stock) -- (tool);
+  \draw[flow] (tool) -- (out);
+  \draw[flow] (out) -- (rev);
+  \draw[flow] (rev) -- node[lbl, above]{approved} (imp);
+  \draw[flow] (imp) -| (store);
+\end{tikzpicture}}
+\caption{The round trip. The tools occupy one box. The human occupies four, and
+one of them is a review gate that no catalogue change can skip.}
+\end{figure}
+
+\begin{keyidea}{The constraint bought something real}
+Because the tools cannot write to the shop, a wrong result is a wrong spreadsheet,
+not a wrong storefront. The human review step in the middle is not ceremony; it
+is the only thing standing between a bad match and a live price. A design that
+used the API would have had to add that safety back deliberately.
+\end{keyidea}
+
+The cost of the constraint is equally real: without the API there are no stable
+product identifiers to join on. The tools can only join on the text fields the
+export happens to contain. Section \ref{sec:matching} is entirely about the
+consequences of that.
+
+\section{Repository layout}
+
+\begin{figure}[H]
+\centering
+\begin{forest} dirtree
+[hitec-shopify-automation
+  [README.md]
+  [LICENSE {\rmfamily\scriptsize (PolyForm Strict 1.0.0)}]
+  [requirements.txt {\rmfamily\scriptsize (pandas, openpyxl)}]
+  [.env.example {\rmfamily\scriptsize (declares: nothing needed)}]
+  [quantity\_pricing\_updater/
+    [update\_quantity\_pricing.py {\rmfamily\scriptsize (69 lines, CLI)}]
+    [update\_quantity\_pricing.spec {\rmfamily\scriptsize (PyInstaller)}]
+  ]
+  [dimensions\_extractor/
+    [dimensions\_extractor.py {\rmfamily\scriptsize (83 lines, CLI)}]
+    [dimensions\_extractor.spec {\rmfamily\scriptsize (PyInstaller)}]
+  ]
+  [stock\_updater\_gui/
+    [shopify\_stock\_updater.py {\rmfamily\scriptsize (354 lines, tkinter, no .spec)}]
+  ]
+  [sample\_data/
+    [sample\_stock\_list.csv {\rmfamily\scriptsize (8 stock rows)}]
+    [sample\_shopify\_stock.csv {\rmfamily\scriptsize (6 product rows)}]
+  ]
+  [docs/
+    [screenshots/app.png]
+    [explainers/ {\rmfamily\scriptsize (this document)}]
+  ]
+]
+\end{forest}
+\caption{Every tracked file. Fifteen of them. This is a small repository and the
+document is sized to match.}
+\end{figure}
+
+The shape is one folder per tool plus shared sample data. There is no package,
+no \file{\_\_init\_\_.py}, no shared module, and no test directory. Each script
+is standalone and run directly.
+
+\section{The two data files}
+
+Understanding the tools requires understanding the two spreadsheet shapes they
+join. Both are given as small fabricated samples in \file{sample\_data/}.
+
+\begin{jargon}{CSV and XLSX}
+\textbf{CSV} (comma-separated values) is a plain-text table: one line per row,
+fields separated by commas, quotes around fields that contain a comma or a
+newline. \textbf{XLSX} is the modern Excel binary workbook format. Both hold a
+table; CSV is readable in any text editor, XLSX is not.
+\end{jargon}
+
+\subsection{The stock list}
+
+Seven columns. The ones the tools use are in bold.
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Column} & \textbf{Role} \\
+\midrule
+\code{No} & Row number. Unused. \\
+\textbf{\code{Item}} & \textbf{The bearing designation, e.g. \code{6205} or \code{22210 K}. Join key.} \\
+\textbf{\code{Brand}} & \textbf{\code{HI-TEC} or a competitor. The disambiguator.} \\
+\textbf{\code{Quantity}} & \textbf{Units on the shelf. Copied out.} \\
+\code{Latest Cost} & Most recent purchase cost. Unused by the tools. \\
+\textbf{\code{Average Cost}} & \textbf{Averaged purchase cost. Copied out.} \\
+\code{Sale Price} & Retail price. Unused by the tools. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Note that the tools copy \code{Average Cost}, not \code{Latest Cost} and not
+\code{Sale Price}. The README describes this tool as updating ``quantities,
+costs''; that is accurate. It does not touch the customer-facing price at all.
+
+\subsection{The Shopify export}
+
+Fifteen columns in the sample, following the Shopify product-export layout. The
+ones that matter:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Column} & \textbf{Role} \\
+\midrule
+\code{Handle} & Groups the rows of one product together. \\
+\textbf{\code{Title}} & \textbf{Product name. Join key for single-variant products.} \\
+\textbf{\code{Body (HTML)}} & \textbf{The description, as raw HTML. Holds the dimensions table.} \\
+\code{Option1 Name} & \code{Title} for single-variant products, else e.g. \code{Size}. \\
+\textbf{\code{Option1 Value}} & \textbf{\code{Default Title}, or the variant name. Join key for variants.} \\
+\code{Variant Inventory Qty} & What the storefront currently believes. Read by nothing. \\
+\code{Cost per item} & What the storefront currently believes. Read by nothing. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyidea}{The \code{Default Title} sentinel}
+Shopify gives every product at least one variant. A product with no real variants
+gets one anyway, and Shopify labels it \code{Option1 Value = Default Title}. So
+that literal string is how a program tells ``this product has no variants, its
+identity is in \code{Title}'' apart from ``this is variant N of a product, its
+identity is in \code{Option1 Value}''. Every tool in this repository branches on
+that string.
+\end{keyidea}
+
+Observe the consequence in the sample: for the second variant row of product
+\code{22210}, the \code{Title} cell is empty. Shopify writes the product-level
+fields only on the first row of each \code{Handle} group. That is exactly why
+variants cannot be matched on \code{Title} and need \code{Option1 Value}.
+
+\subsection{What the sample data actually is}
+
+\begin{honest}{The ``11,000-line Shopify export'' is not in this repository}
+The README states, correctly and in the past tense, that the original repo held
+the client's real data: roughly 1,600 stock rows and an 11,000-line Shopify
+export, and that it was removed. Confirmed against what is actually here:
+
+\begin{itemize}
+  \item \file{sample\_shopify\_stock.csv} is \textbf{117 physical lines, which
+  pandas reads as 6 product rows} (the HTML descriptions span many lines each).
+  \item \file{sample\_stock\_list.csv} is \textbf{8 stock rows}.
+\end{itemize}
+
+So the figures ``1,600'' and ``11,000'' describe data that no longer exists in
+the repository, and \textbf{nothing in the repo can corroborate them}. They rest
+entirely on the owner's recollection of the 2023 engagement. Git history was
+checked: the real data was \textbf{never committed}, not even in the initial
+commit, so it is not recoverable from history either. That is good for
+confidentiality and it means the numbers are unverifiable by anyone, including
+the owner, without the original client files.
+
+This is not an accusation that the numbers are wrong. It is a warning that they
+are the one class of claim on this project that cannot be defended by pointing at
+the code. If an interviewer asks ``how do you know it was 11,000 lines'', the
+honest answer is ``I worked on the file in 2023; it is not in the repo because it
+was client-internal''. Do not improve the number, and do not claim the sample
+demonstrates scale. It demonstrates correctness, at six rows.
+\end{honest}
+
+The sample is well built for its actual job. It is deliberately adversarial in
+two places: \code{6205} and \code{6304 2RS} each have a competing \code{OTHER}
+brand row with different figures, so a tool that forgets to filter by brand
+produces visibly wrong output. That is a test fixture in all but name.
+
+\section{Tool 1: the quantity and pricing updater}
+\label{sec:matching}
+
+\file{quantity\_pricing\_updater/update\_quantity\_pricing.py}. 69 lines, no
+functions, top-to-bottom script.
+
+\subsection{Entry point}
+
+\begin{lstlisting}[language=Python,caption={Argument handling}]
+if len(sys.argv) == 3:
+    stock_list_path, shopify_stock_path = sys.argv[1], sys.argv[2]
+else:
+    from tkinter.filedialog import askopenfilename
+    ...
+    while stock_list_path == '':
+        stock_list_path = askopenfilename(filetypes=[('Stock List CSV', '*.csv')])
+\end{lstlisting}
+
+Two paths on the command line, or a file picker for each. The \code{while} loop
+means cancelling the dialog re-opens it forever: there is no way to abort except
+killing the process.
+
+\begin{jargon}{pandas and the DataFrame}
+\code{pandas} is the standard Python library for tabular data. Its central object
+is the \textbf{DataFrame}: a table in memory with named columns, loaded from a CSV
+in one call. \code{df[df['Brand'] == 'HI-TEC']} produces a new DataFrame of only
+the rows where that is true. This filtering style is what the whole project is
+built on.
+\end{jargon}
+
+\subsection{The matching problem}
+
+\begin{keyidea}{Two tables with no shared key}
+The stock list has no Shopify product ID. The Shopify export has no stock-system
+item number. There is no column that means the same thing in both files and can
+be trusted to be unique. All that exists is a bearing designation that appears in
+both, as text: \code{6205} in the stock list's \code{Item}, and \code{6205} in
+the Shopify export's \code{Title}. So the join is on text, and the text is not
+unique, because \code{6205} appears once per brand.
+\end{keyidea}
+
+The disambiguator is \code{Brand}. Only the \code{HI-TEC} row is the one to
+trust. Filter first, then join:
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm and 14mm]
+  \node[store] (sl) {stock list\\8 rows};
+  \node[box, right=of sl] (filt) {filter\\\code{Brand == 'HI-TEC'}};
+  \node[store, right=of filt] (hitec) {6 trusted rows\\\code{Item, Quantity,}\\\code{Average Cost}};
+
+  \node[store, below=16mm of sl] (ss) {Shopify export\\6 rows};
+  \node[dec, right=of ss] (split) {\code{Option1 Value}\\\code{== 'Default}\\\code{Title'}?};
+  \node[box, above right=2mm and 12mm of split] (defl) {default-title view\\join on \code{Title}};
+  \node[box, below right=2mm and 12mm of split] (nond) {variant view\\join on \code{Option1 Value}};
+  \node[box, right=22mm of split, xshift=28mm] (cat) {\code{concat}};
+  \node[store, right=of cat] (out) {\code{updated\_*.csv}\\+ \code{Updated Quantity}\\+ \code{Updated Cost}};
+
+  \draw[flow] (sl) -- (filt);
+  \draw[flow] (filt) -- (hitec);
+  \draw[flow] (ss) -- (split);
+  \draw[flow] (split) -- node[lbl,above,sloped]{yes} (defl);
+  \draw[flow] (split) -- node[lbl,below,sloped]{no} (nond);
+  \draw[flow] (defl) -| (cat);
+  \draw[flow] (nond) -| (cat);
+  \draw[flow] (cat) -- (out);
+  \draw[dflow] (hitec) -- node[lbl,right]{lookup\\source} (defl);
+\end{tikzpicture}}
+\caption{The data flow. The brand filter happens once, up front. The split on the
+\code{Default Title} sentinel decides which column is the join key.}
+\end{figure}
+
+\subsection{The matching loop, line by line}
+
+\begin{lstlisting}[language=Python,caption={The default-title branch, verbatim}]
+default_title_shopify_stock["Updated Quantity"] = 0
+default_title_shopify_stock["Updated Cost"] = 0
+
+title_shopify_stock = default_title_shopify_stock["Title"].tolist()
+for x in title_shopify_stock:
+    if x in stock_list[stock_list['Brand'] == 'HI-TEC']["Item"].tolist():
+        print('original', x)
+        ...
+        default_title_shopify_stock.loc[
+            default_title_shopify_stock["Title"] == x,
+            ['Updated Quantity', 'Updated Cost']] = stock_list.loc[
+            (stock_list["Item"] == x) & (stock_list['Brand'] == 'HI-TEC'),
+            ['Quantity', 'Average Cost']].values[0]
+\end{lstlisting}
+
+Read carefully, this is doing the following per Shopify row:
+
+\begin{pseudocode}{What one iteration costs}
+\Step{1. Re-filter the ENTIRE stock list to \code{Brand == 'HI-TEC'}.}
+\Step{2. Convert that filtered column to a fresh Python list.}
+\Step{3. Linear-scan the list for the title.}
+\Step{4. If found, filter the entire stock list AGAIN (twice more, for the two}
+\Indent{\code{.loc} lookups), take \code{.values[0]}.}
+\Step{5. Scan the whole Shopify view again to find the rows to write to.}
+\end{pseudocode}
+
+\begin{honest}{The matching is quadratic, and needlessly}
+Steps 1 to 3 rebuild the same filtered list on every single iteration. Nothing in
+the loop changes the stock list, so this is the same work re-done $n$ times. With
+$n$ Shopify rows and $m$ stock rows the loop is $O(n \times m)$ with a large
+constant factor, when the entire operation is one \code{pandas.merge} on
+\code{Item} against a pre-filtered frame: $O(n + m)$, and about four lines. The
+README says this itself and is right to. On six rows it is invisible. On the
+11,000-row export it is the difference between instant and a coffee break.
+
+Worth being precise about the defence: this is not a subtle bug, it is a
+straightforwardly slow implementation of a correct idea. The idea (filter by
+brand, then join) is the part that took the thinking, and it is right.
+\end{honest}
+
+\begin{honest}{Writing into a filtered view: correct here, by luck of version}
+\code{default\_title\_shopify\_stock} is the result of \code{shopify\_stock[mask]}.
+In pandas that is a \textbf{view-or-copy of ambiguous identity}, and assigning
+into it raises \code{SettingWithCopyWarning}. Running the tool prints exactly
+that warning.
+
+It works today because the script never relies on the write propagating back to
+the parent frame: it writes into the two views, then \code{concat}s the two views
+together and saves that. So the ambiguity is dodged rather than resolved.
+
+\textbf{This is why \file{requirements.txt} pins \code{pandas>=2.0,<3.0}.} Under
+pandas 3.0's copy-on-write semantics the assignment target becomes unambiguously
+a copy, and code of this shape loses writes silently rather than warning. The pin
+is load-bearing and the README knows it. Removing the upper bound is not a
+maintenance chore; it is a correctness change that needs the loops rewritten
+first.
+\end{honest}
+
+\subsection{Verified behaviour}
+
+The tool was run against the shipped sample.
+
+\begin{center}
+\begin{tabular}{@{}llrrl@{}}
+\toprule
+\textbf{Title} & \textbf{Option1 Value} & \textbf{Updated Qty} & \textbf{Updated Cost} & \textbf{Note} \\
+\midrule
+\code{6205} & \code{Default Title} & 55 & 50 & HI-TEC row, not \code{OTHER}'s 3 / 45 \\
+\code{6206} & \code{Default Title} & 30 & 64 & \\
+\code{1205} & \code{Default Title} & 28 & 85 & \\
+\code{6304 2RS} & \code{Default Title} & 70 & 41 & HI-TEC row, not \code{OTHER}'s 5 / 38 \\
+\code{22210} & \code{22210 K} & 15 & 172 & matched via \code{Option1 Value} \\
+(empty) & \code{22210 E} & 10 & 185 & matched despite empty \code{Title} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyidea}{Confirmed: the brand filter earns its place}
+Both trap rows resolve to the HI-TEC figures. Both variant rows resolve through
+\code{Option1 Value}, including the one whose \code{Title} is blank. The README's
+central claim about this tool is true, and I checked it by running it rather than
+reading it.
+\end{keyidea}
+
+The output also confirms a detail the README does not mention: rows that match
+nothing keep \code{Updated Quantity = 0} rather than blank. A commented-out block
+in the source shows the author considered converting those zeros to \code{NaN}
+and did not:
+
+\begin{lstlisting}[language=Python,caption={Dead code, left in the GUI version}]
+# # Replace values with 0 to NaN in Updated Quantity and Updated Cost
+# shopify_stock['Updated Quantity'] = shopify_stock['Updated Quantity'].replace(0, pandas.np.nan)
+\end{lstlisting}
+
+\begin{honest}{A zero that means ``no data'' is a hazard in this workflow}
+An unmatched product gets \code{Updated Quantity = 0}, which is indistinguishable
+from a product genuinely out of stock. Since the output spreadsheet is re-imported
+into a live shop, a human who trusts that column without checking would zero the
+inventory of every product that failed to match. The review step is what catches
+this, which is precisely why the review step exists. The commented-out
+\code{NaN} line would have made the distinction visible. It is also broken as
+written: \code{pandas.np} was removed from pandas in version 2.0, so that line
+would raise \code{AttributeError} if uncommented under the pinned version.
+\end{honest}
+
+\subsection{Output path construction}
+
+\begin{lstlisting}[language=Python]
+updated_file_path = shopify_stock_path.split('/')
+updated_file_path[-1] = 'updated_' + updated_file_path[-1]
+updated_file_path = '/'.join(updated_file_path)
+\end{lstlisting}
+
+String surgery on the path, splitting on a hard-coded forward slash. On Windows,
+where the client's packaged executable ran and where paths use backslashes, this
+is saved only by \code{askopenfilename} returning forward-slash paths regardless
+of platform. It is fragile by accident rather than by design; \code{os.path} or
+\code{pathlib} does this correctly in one call. The CLI version also silently
+overwrites an existing \code{updated\_} file. Only the GUI guards against that.
+
+\section{Tool 2: the dimensions extractor}
+
+\file{dimensions\_extractor/dimensions\_extractor.py}. 83 lines.
+
+\subsection{The problem: data locked inside prose}
+
+Each product's \code{Body (HTML)} contains a dimensions table as raw markup:
+
+\begin{lstlisting}[language=HTML,caption={A real \code{Body (HTML)} cell from the sample}]
+<p>Product Category: Ball Bearings</p>
+<table width="100%">
+<tbody>
+<tr><td colspan="3">Dimensions(mm)</td></tr>
+<tr><td>d</td><td>Bore Diameter</td><td>25</td></tr>
+<tr><td>D</td><td>Outside Diameter</td><td>52</td></tr>
+<tr><td>T</td><td>Width</td><td>15</td></tr>
+</tbody>
+</table>
+\end{lstlisting}
+
+(Shown here folded onto single lines for width. In the file each \code{<td>} is
+on its own line, and that fact is load-bearing, as the next section explains.)
+
+\begin{jargon}{HTML tag}
+Text inside angle brackets that marks up a document's structure.
+\code{<td>25</td>} means ``a table cell containing 25''. The \code{<td>} and
+\code{</td>} are the tags; \code{25} is the content. A browser reads the tags and
+draws a table. A spreadsheet column just holds the whole thing as one long string.
+\end{jargon}
+
+The customer sees a neat table. The storefront cannot filter on ``bore diameter
+between 20 and 30'' because as far as Shopify is concerned this is one opaque
+blob of description text. Getting those three numbers into their own columns is
+what makes them usable as metafields.
+
+\begin{jargon}{Metafield}
+A custom field attached to a Shopify product beyond the built-in ones. Once bore
+diameter is a metafield rather than a sentence in the description, the theme can
+offer a filter on it. This is the business reason the tool exists.
+\end{jargon}
+
+\subsection{The strategy: flatten and read line pairs}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=6mm and 10mm]
+  \node[store] (raw) {\code{Body (HTML)}\\raw markup string};
+  \node[box, right=of raw] (low) {\code{.lower()}};
+  \node[box, right=of low] (strip) {\code{re.sub('<.*?>', '')}\\strip every tag};
+  \node[box, right=of strip] (split) {split on newline,\\drop empty lines};
+  \node[store, right=of split] (lines) {flat list\\of text lines};
+  \node[box, below=12mm of lines] (scan) {find index of\\label line};
+  \node[box, left=of scan] (next) {take the\\NEXT line};
+  \node[dec, left=of next] (num) {numeric?};
+  \node[store, left=of num] (col) {write into\\column};
+  \node[extbox, below=8mm of num] (skip) {skip: leave\\column empty};
+
+  \draw[flow] (raw) -- (low);
+  \draw[flow] (low) -- (strip);
+  \draw[flow] (strip) -- (split);
+  \draw[flow] (split) -- (lines);
+  \draw[flow] (lines) -- (scan);
+  \draw[flow] (scan) -- (next);
+  \draw[flow] (next) -- (num);
+  \draw[flow] (num) -- node[lbl,above]{yes} (col);
+  \draw[flow] (num) -- node[lbl,left]{no} (skip);
+\end{tikzpicture}}
+\caption{The extraction pipeline. Note what survives: the table becomes a flat
+list of lines, and all structure is gone except adjacency.}
+\end{figure}
+
+\begin{keyidea}{The core assumption}
+After the tags are stripped, \code{<td>Bore Diameter</td>} and \code{<td>25</td>}
+were on separate lines, so they become two consecutive entries in the list:
+\code{['bore diameter', '25']}. So: \textbf{find the label, take the very next
+line, and that is the value}. The whole extractor rests on this one assumption.
+\end{keyidea}
+
+\begin{lstlisting}[language=Python,caption={The tag stripper}]
+def remove_html_tags(text_to_be_cleaned):
+    """Remove html tags from a string"""
+    clean = re.compile('<.*?>')
+    return re.sub(clean, '', text_to_be_cleaned)
+\end{lstlisting}
+
+\begin{jargon}{Regular expression (regex)}
+A pattern language for text. \code{<.*?>} means: a \code{<}, then any characters,
+then a \code{>}. The \code{?} makes it \textbf{non-greedy}, so it stops at the
+first \code{>} rather than running to the last one on the line. Without the
+\code{?}, the pattern would eat \code{<td>25</td>} whole and the number would be
+destroyed along with the tags. That single character is why this function works.
+\end{jargon}
+
+\subsection{The scanning loop and its three branches}
+
+\begin{lstlisting}[language=Python,caption={The heart of the extractor}]
+values_to_check = ['outside diameter', 'bore diameter', 'width']
+for x in df.iterrows():
+    temp = str(x[1]['Body (HTML)']).lower()
+    text = [x for x in remove_html_tags(temp).split('\n') if x != '']
+    for value in values_to_check:
+        if value in text:                          # branch 1: exact line match
+            index = text.index(value) + 1
+            if check_int_float(text[index]):
+                df[value][x[0]] = text[index]
+        elif value == 'width':                     # branch 2: the 'total width' fallback
+            if 'total width' in text:
+                index = text.index('total width') + 1
+                ...
+        else:                                      # branch 3: substring scan
+            for temp in text:
+                if value in temp:
+                    index = text.index(temp) + 1
+                    ...
+\end{lstlisting}
+
+Three ways to find a label, tried in order:
+
+\begin{enumerate}
+  \item \textbf{Exact match.} The line is exactly \code{bore diameter}. This is
+  the normal path and the only one the sample exercises.
+  \item \textbf{The \code{total width} fallback.} Some products label the field
+  \code{total width} rather than \code{width}. This branch is real
+  domain knowledge, learned from the client's actual catalogue, and it is the
+  most interesting line in the file: it is the fingerprint of someone who looked
+  at the data rather than assuming it.
+  \item \textbf{Substring scan.} If a line merely \emph{contains} the label, use
+  it. This catches \code{bore diameter (mm)} and similar.
+\end{enumerate}
+
+\begin{honest}{Branch 2 shadows branch 3 for \code{width}, permanently}
+The \code{elif value == 'width'} sits between the exact match and the substring
+scan. So for \code{width}, and only for \code{width}, branch 3 is unreachable: if
+the exact line is absent, control goes to branch 2 and stops there whether or not
+it finds \code{total width}. A line reading \code{overall width (mm)} would be
+found for \code{bore diameter}-style labels but never for \code{width}. The
+ordering is almost certainly unintentional.
+\end{honest}
+
+\begin{honest}{\code{text.index(temp)} is the wrong lookup in branch 3}
+\code{for temp in text} already iterates the lines, but the code then calls
+\code{text.index(temp)} to ask where that line is. \code{list.index} returns the
+\textbf{first} occurrence. If the same line text appears twice in a description,
+branch 3 reads the value following the first one regardless of which one it
+matched. \code{enumerate} gives the correct index for free. The same pattern
+recurs in the variant detector.
+\end{honest}
+
+\begin{honest}{The loop variable \code{temp} is reused for two different things}
+\code{temp} holds the lowercased HTML string, and then branch 3 rebinds it as the
+per-line loop variable, destroying the original inside that iteration. It happens
+to be harmless because the HTML string is not read again in that pass, but it is
+the kind of accident that stops being harmless the moment a line is added.
+The outer loop variable \code{x} is likewise shadowed by the list comprehension
+that builds \code{text}.
+\end{honest}
+
+\subsection{Verified behaviour}
+
+Run against the sample, the extractor recovered every dimension:
+
+\begin{center}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+\textbf{Title} & \textbf{Option1 Value} & \textbf{bore} & \textbf{outside} & \textbf{width} \\
+\midrule
+\code{6205} & \code{Default Title} & 25 & 52 & 15 \\
+\code{6206} & \code{Default Title} & 30 & 62 & 16 \\
+\code{22210} & \code{22210 K} & 50 & 90 & 23 \\
+\code{1205} & \code{Default Title} & 25 & 52 & 15 \\
+\code{6304 2RS} & \code{Default Title} & 20 & 52 & 15 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The README's claim that it ``recovers all three dimensions from the sample HTML''
+is confirmed. But count the rows.
+
+\begin{honest}{The output has five rows. The input had six.}
+\begin{lstlisting}[language=Python]
+df = df.dropna(subset=['Body (HTML)'])
+\end{lstlisting}
+The \code{22210 E} variant has no description of its own (Shopify writes
+product-level fields only on the first row of a \code{Handle} group), so its
+\code{Body (HTML)} is empty, so \code{dropna} \textbf{deletes the row from the
+output file entirely}.
+
+This is a real defect and the README does not mention it. The tool's contract, as
+described, is ``adds three columns''. Its actual behaviour is ``adds three columns
+and silently drops every variant row that lacks its own description'', which on a
+catalogue of multi-variant products is potentially most of the rows. The intent
+was obviously to skip such rows when scanning; the effect is to remove them from
+the deliverable.
+
+How bad is it in practice? The output is re-imported to Shopify, and a Shopify
+product import updates the rows present rather than deleting absent ones, so this
+most likely does not destroy live variants. It does mean those variants never
+receive their dimension columns, quietly. Marking this \textbf{inferred}: I have
+not verified Shopify's import behaviour against a live store, and doing so was out
+of scope. Either way, \code{df.loc[df['Body (HTML)'].notna()]} as the loop's
+iteration source, rather than \code{dropna} on the frame itself, is the one-line
+fix that keeps every row in the output.
+\end{honest}
+
+\begin{honest}{The two versions disagree on the column's type}
+The CLI writes \code{df[value][x[0]] = text[index]}, storing the \textbf{string}
+\code{'25'}. The GUI writes \code{float(text[index])}, storing the \textbf{number}
+\code{25.0}. Same tool, same column, two types, depending on which binary the
+client double-clicked. For a filterable metafield that difference decides whether
+sorting is numeric or lexicographic, which is the difference between
+$9 < 10$ and \code{'10' < '9'}.
+\end{honest}
+
+Both versions use \textbf{chained assignment}, \code{df[value][x[0]] = ...},
+which selects a column and then indexes into it. This is the pattern the pandas
+documentation warns about most loudly, and the second reason for the
+\code{pandas<3} pin.
+
+\section{Tool 3: the GUI, and a third operation}
+
+\file{stock\_updater\_gui/shopify\_stock\_updater.py}. 354 lines. This is what
+the client actually received.
+
+\begin{jargon}{tkinter}
+Python's built-in GUI toolkit. It ships with Python, needs no installation on
+Windows, and produces a native desktop window. That last property is the entire
+reason it was chosen: the deliverable had to be a thing a non-technical person
+double-clicks.
+\end{jargon}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=5mm and 10mm]
+  \node[box, minimum width=52mm] (win) {\code{root} window, 900x800, non-resizable};
+  \node[box, below=of win, minimum width=52mm] (b1) {Button: Update Quantity and Pricing};
+  \node[box, below=of b1, minimum width=52mm] (b2) {Button: Extract Data from HTML};
+  \node[box, below=of b2, minimum width=52mm] (b3) {Button: Variant Detection};
+  \node[box, below=of b3, minimum width=52mm, fill=white] (err) {\code{error}: read-only Text widget\\(status and error display)};
+
+  \node[extbox, right=22mm of b1] (f1) {\code{update\_quantity\_and\_pricing()}};
+  \node[extbox, right=22mm of b2] (f2) {\code{extract\_data\_from\_html()}};
+  \node[extbox, right=22mm of b3] (f3) {\code{variants\_detection()}};
+  \node[box, right=22mm of err] (sv) {\code{save\_data()}};
+
+  \draw[flow] (b1) -- (f1); \draw[flow] (b2) -- (f2); \draw[flow] (b3) -- (f3);
+  \draw[flow] (f1) -- (sv); \draw[flow] (f2) -- (sv); \draw[flow] (f3) -- (sv);
+  \draw[dflow] (sv) -- node[lbl,above]{writes status} (err);
+\end{tikzpicture}
+\caption{The GUI's structure. Three buttons, three handlers, one shared save
+routine, one status widget. Verified against the shipped screenshot
+\file{docs/screenshots/app.png}, which shows exactly this layout.}
+\end{figure}
+
+\subsection{Additions over the CLI tools}
+
+\begin{itemize}
+  \item \textbf{XLSX input and output.} \code{open\_file} inspects the chosen
+  extension and returns a boolean alongside the path, so callers pick
+  \code{read\_excel} or \code{read\_csv}. Output is always XLSX.
+  \item \textbf{Distinct output prefixes.} \code{updated\_p\_} for pricing,
+  \code{updated\_h\_} for HTML dimensions, \code{updated\_v\_} for variants, so the
+  three operations do not clobber each other.
+  \item \textbf{Non-destructive saves.} See \code{save\_data} below.
+  \item \textbf{Hover feedback.} \code{on\_enter} and \code{on\_leave} swap the
+  button background. Small, but it is the kind of thing that makes software feel
+  alive to a non-technical user.
+\end{itemize}
+
+\begin{honest}{\code{open\_file}'s retry loop does not loop}
+\begin{lstlisting}[language=Python]
+filepath = ''
+while filepath == '':
+    ...
+    filepath = askopenfilename(...)
+    if filepath.split('.')[-1] == 'xlsx':
+        return filepath, True
+    else:
+        return filepath, False
+\end{lstlisting}
+Both branches of the \code{if} return, so the \code{while} body can never run
+twice. If the user cancels the dialog, \code{askopenfilename} returns the empty
+string, the \code{else} branch returns \code{('', False)}, and the caller hands
+that to \code{read\_csv}, which raises and takes the handler down with an
+unhandled exception. The window survives (tkinter catches it and prints to the
+console) but the user sees the prompt text and no explanation, because
+nothing writes to the \code{error} widget on failure. The loop was clearly meant
+to re-prompt; the returns defeat it.
+
+There is a second, quieter bug in the same three lines: the extension test is
+\code{filepath.split('.')[-1] == 'xlsx'}. Cancel returns \code{''}, whose split
+is \code{['']}, so the \code{else} fires. But any file whose name has no dot, or
+a path containing a dot in a directory name, is classified by the wrong segment.
+\end{honest}
+
+\subsection{\code{save\_data} and the non-overwrite counter}
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=8mm and 14mm]
+  \node[box] (start) {\code{save\_data(path)}};
+  \node[dec, below=of start] (try) {\code{read\_excel(path)}\\succeeds?};
+  \node[box, right=18mm of try] (bump) {\code{counter += 1}\\path becomes\\\code{(N)name.xlsx}};
+  \node[box, below=14mm of try] (write) {\code{to\_excel(path)}\\status: green message};
+
+  \draw[flow] (start) -- (try);
+  \draw[flow] (try) -- node[lbl,above]{yes: file exists} (bump);
+  \draw[flow] (bump) -- ++(0,16mm) -| (try);
+  \draw[flow] (try) -- node[lbl,left]{\code{FileNotFoundError}} (write);
+\end{tikzpicture}
+\caption{The non-overwrite loop. ``Does this file exist'' is answered by trying
+to parse it as a whole spreadsheet.}
+\end{figure}
+
+\begin{keyidea}{The intent is right}
+The client re-runs these tools repeatedly on the same folder. Silently overwriting
+yesterday's reviewed output would be a genuinely destructive default. Bumping to
+\code{(1)name.xlsx}, \code{(2)name.xlsx} and so on mirrors what a browser does for
+duplicate downloads, which is exactly the right idiom for this audience.
+\end{keyidea}
+
+\begin{honest}{The existence check is a full spreadsheet parse}
+\begin{lstlisting}[language=Python]
+try:
+    pandas.read_excel(updated_file_path)   # existence check
+    counter += 1
+    ...
+except FileNotFoundError:
+    df.to_excel(updated_file_path, index=False)
+\end{lstlisting}
+To learn whether a path exists, the code \textbf{reads and parses the entire
+workbook} and throws the result away. On the real 11,000-row export, saving the
+tenth run means parsing nine full spreadsheets first. \code{os.path.exists(path)}
+is the one-call answer.
+
+Worse, it catches only \code{FileNotFoundError}. A file that exists but is not a
+readable workbook (a partially written file, a permissions error, or the very
+common case of \textbf{the file being open in Excel}) raises something else:
+\code{PermissionError}, \code{BadZipFile}, \code{ValueError}. None are caught, so
+the handler dies and no status ever reaches the user. Given that the audience is a
+client who lives in Excel and will absolutely have the previous output open while
+running the tool again, this is the failure mode most likely to have actually bitten
+in practice.
+\end{honest}
+
+\subsection{Variant detection}
+
+The third operation, present only in the GUI. It parses bearing designation
+suffixes into human-readable columns.
+
+\begin{keyidea}{The domain knowledge}
+A bearing designation like \code{22210 EK} is not a name, it is an encoding. The
+digits give the series and size; the trailing letters describe construction. This
+function is a lookup table for that code, and it is the only place in the
+repository where the author's understanding of the client's product domain is
+written down.
+\end{keyidea}
+
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Column} & \textbf{Token} & \textbf{Mapped to} & \\
+\midrule
+\code{Bore} & \code{k} & \code{Tapered} & \\
+\midrule
+\code{Cage} & \code{e} & \code{Steel} & \\
+ & \code{f} & \code{Fibre} & \\
+ & \code{m} & \code{Brass} & \\
+ & \code{ecp} & \code{Polyamide} & \\
+ & \code{ca} & \code{Brass} & \\
+ & \code{mb} & \code{Steel} & \\
+ & \code{cc} & \code{Brass} & \\
+\midrule
+\code{Seal Type} & \code{2rs} & \code{2RS} & \\
+ & \code{rs} & \code{rs} & (unchanged) \\
+ & \code{z} & \code{z} & (unchanged) \\
+ & \code{2z} & \code{2z} & (unchanged) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Plus two rules that run after the token scan:
+
+\begin{pseudocode}{The series-2xxxx override}
+\Step{if the variant's last token is numeric:}
+\Indent{Bore := 'Plain', Cage := 'Steel'}
+\Indent{if first token starts with '2' and has length 5: Cage := 'Brass'}
+\Step{else, after scanning tokens:}
+\Indent{if 'e' or 'ca' or 'mb' in tokens:}
+\Indent{\ \ if numeric token starts with '2' and has length 5: Cage := 'Brass'}
+\Indent{if 'cc' in tokens:}
+\Indent{\ \ if numeric token starts with '2' and has length 5: Cage := 'Steel'}
+\end{pseudocode}
+
+Traced against the sample:
+
+\begin{center}
+\begin{tabular}{@{}lllll@{}}
+\toprule
+\textbf{Variant} & \textbf{Tokens} & \textbf{Bore} & \textbf{Cage} & \textbf{Seal} \\
+\midrule
+\code{22210 K} & \code{['22210','k']} & \code{Tapered} & (empty) & (empty) \\
+\code{22210 E} & \code{['22210','e']} & (empty) & \code{Brass} & (empty) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For \code{22210 E}: the token scan sets \code{Cage = 'Steel'} from the \code{e}
+lookup, then the override fires (first token \code{22210} starts with \code{2},
+length 5) and rewrites it to \code{Brass}. The table lookup is deliberately
+overruled by the series rule. That is real domain knowledge encoded as a
+post-pass, and it is the most defensible thing in this function.
+
+\begin{honest}{\code{sealtype\_possible\_variants\_name} is three-quarters a no-op}
+\begin{lstlisting}[language=Python]
+sealtype_possible_variants = ['2rs', 'rs', 'z', '2z']
+sealtype_possible_variants_name = ['2RS', 'rs', 'z', '2z']
+\end{lstlisting}
+Only \code{2rs} is translated, and only into its own uppercase form. The other
+three map to themselves. The README says variant detection parses suffixes ``into
+human-readable \code{Bore}, \code{Cage}, and \code{Seal Type} columns''. For
+\code{Bore} and \code{Cage} that is true and useful. For \code{Seal Type} it is
+not: the column receives the raw code back, unchanged and mostly lowercase. Either
+the mapping was never finished, or the seal codes were considered self-explanatory
+and the parallel-list structure was kept for symmetry. The code does not say which.
+\end{honest}
+
+\begin{honest}{Parallel lists are the wrong data structure here}
+Every lookup is \code{name\_list[code\_list.index(token)]}: two lists kept in
+sync by hand, joined by a positional index. A single \code{dict} makes the
+correspondence impossible to break, halves the code, and makes
+\code{'m': 'Brass'} readable as a fact rather than as ``the third element of one
+list goes with the third element of another''. As written, inserting a code into
+one list without the other silently shifts every mapping after it.
+\end{honest}
+
+\begin{honest}{\code{x} is set from the wrong index, and defaults to 0}
+\begin{lstlisting}[language=Python]
+x = 0
+for value in item_individual:
+    if check_int_float(value):
+        x = item_individual.index(value)
+\end{lstlisting}
+\code{x} is meant to be the position of the numeric token, and it is later used as
+\code{item\_individual[x]} in the series override. Two problems: \code{index()}
+finds the first occurrence rather than the current one, and if there is no numeric
+token at all, \code{x} silently stays \code{0} and the override tests token 0
+anyway. It works on the sample because the numeric token \emph{is} token 0. On
+\code{K 22210} it would still work by accident; on a designation with two numeric
+tokens it would read the wrong one.
+\end{honest}
+
+\begin{honest}{The variant detector ignores \code{Brand} entirely}
+Tool 1's central insight is that a designation is ambiguous without the brand.
+The variant detector then parses designations with no brand filter at all. This
+is defensible, since a suffix code means the same thing whoever made the bearing,
+but it is worth noticing that the repository's own hard-won rule is not applied
+here, and no comment says why.
+\end{honest}
+
+\section{The GUI/CLI divergence}
+
+\begin{keyidea}{The GUI is a copy, not a wrapper}
+The README says the GUI ``bundles both tools above''. Read the source and it does
+not import them; it contains its own near-identical copies of both. The README's
+``What I'd do differently'' names this: the logic should live in one shared module
+with two frontends. It is right, and this section is what that duplication cost.
+\end{keyidea}
+
+Duplication means the two copies drift, and they have. The type disagreement in
+the dimensions column is one instance. Here is the serious one.
+
+\subsection{A verified bug: the GUI's quantity matcher matches nothing}
+
+The GUI's \code{update\_quantity\_and\_pricing} has one line its CLI sibling does
+not:
+
+\begin{lstlisting}[language=Python,caption={GUI only. This line breaks the match.}]
+def convert_int_float(string):
+    """Check if a string is an integer or a float"""
+    try:
+        num = float(string)
+        return num
+    except ValueError:
+        pass          # <- returns None implicitly
+
+stock_list['Item'] = stock_list['Item'].apply(convert_int_float)
+\end{lstlisting}
+
+The intent is evidently type normalisation: force the \code{Item} column to a
+consistent numeric type before matching. What it actually does, traced against the
+shipped sample:
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Stage} & \textbf{\code{Item} column} & \\
+\midrule
+As read from CSV & \code{['6205','6205','6206','22210 K','22210 E',...]} & all strings \\
+After \code{convert\_int\_float} & \code{[6205.0, 6205.0, 6206.0, nan, nan, ...]} & floats and \code{nan} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two things happened:
+
+\begin{enumerate}
+  \item \code{'6205'} became the float \code{6205.0}. The Shopify \code{Title}
+  it must match is still the \textbf{string} \code{'6205'}, and
+  \code{'6205' in [6205.0]} is \code{False}. Python does not compare a string
+  equal to a float.
+  \item \code{'22210 K'} is not parseable as a float, so \code{convert\_int\_float}
+  falls through to \code{pass} and \textbf{returns \code{None}}, which pandas
+  stores as \code{nan}. Every alphanumeric designation, which is to say every
+  variant, is destroyed outright.
+\end{enumerate}
+
+I ran the GUI's exact matching logic against the shipped sample. The result:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Branch} & \textbf{Matches found} \\
+\midrule
+Default-title rows (join on \code{Title}) & \textbf{0} of 4 \\
+Variant rows (join on \code{Option1 Value}) & \textbf{0} of 2 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{honest}{The GUI's flagship button produces an all-zero column on this data}
+The CLI version matches all six rows correctly. The GUI version, given the same
+two files, matches none, writes \code{Updated Quantity = 0} and
+\code{Updated Cost = 0} for every product, reports ``Quantity and Pricing has been
+updated!'' in green, and saves the file. It fails silently and then congratulates
+itself.
+
+And this is the version the client received.
+
+\textbf{Scope of the claim, stated precisely.} What is verified is that the GUI's
+matching logic finds zero matches \emph{on the sample data shipped in this
+repository}. Whether it failed on the client's real 2023 files is
+\textbf{inferred and unresolvable from this repo}, because it depends on the dtypes
+pandas inferred from data that no longer exists. The mechanism is dtype-dependent
+in a specific way:
+
+\begin{itemize}
+  \item If the real stock list's \code{Item} column was \textbf{purely numeric},
+  pandas would read it as \code{int64} or \code{float64}, the real Shopify
+  \code{Title} column likewise, and \code{6205.0 == 6205.0} would match. The line
+  would then be harmless, or even the thing that made the types agree.
+  \item If either column contained \textbf{any} alphanumeric designation, and the
+  sample says the real data did (\code{22210 K}, \code{6304 2RS} are exactly the
+  kind of thing this catalogue is full of), that column is \code{object} dtype,
+  its entries are strings, and the match collapses as it does here.
+\end{itemize}
+
+The second is far more likely, which raises an uncomfortable and genuinely open
+question: either the GUI's pricing button was broken in the client's hands, or the
+real data had a shape the sample does not reproduce. The repository cannot settle
+it. \textbf{This is the single most important thing to know about this project
+before discussing it}, and it is not in the README.
+
+The honest position, and a strong one: the CLI implementation is correct and
+verifiably so; the GUI copy carries a well-understood dtype bug; the bug is the
+direct, predictable consequence of the duplication the README already identifies
+as the project's main design regret. That is a real lesson with a real receipt
+attached, and it is worth more than a clean bill of health.
+
+The fix is two lines: drop the \code{convert\_int\_float} normalisation and
+compare as strings on both sides, exactly as the working CLI version does.
+\end{honest}
+
+\begin{honest}{\code{convert\_int\_float} has no explicit return, and a copied docstring}
+\code{check\_int\_float} returns a bool. \code{convert\_int\_float} was written by
+copying it, and the docstring came along unedited: both say ``Check if a string is
+an integer or a float'', though the second converts rather than checks. Its
+failure path is a bare \code{pass}, so it returns \code{None} implicitly. An
+explicit \code{return None}, or better a \code{return string} that leaves
+unparseable values alone, would have made the \code{nan} destruction visible at
+the point it was written.
+\end{honest}
+
+\section{Packaging and dependencies}
+
+\subsection{PyInstaller}
+
+\begin{jargon}{PyInstaller}
+A tool that bundles a Python script, the Python interpreter itself, and every
+imported library into a single executable. The recipient runs it without
+installing Python. A \file{.spec} file is the build recipe.
+\end{jargon}
+
+Both CLI tools have a \file{.spec}. They are byte-identical apart from the script
+name and the output name, and both are stock PyInstaller output:
+\code{console=True}, \code{upx=True}, one-file, no hidden imports, no bundled data.
+
+\begin{honest}{The GUI, the one thing the client actually ran, has no \file{.spec}}
+The README states this plainly in its ``Challenges'' section, and it is correct.
+The consequence: the exact packaged-build settings for the deliverable cannot be
+recovered from the repository, only \textbf{inferred} from its two siblings. In
+particular \code{console=True} is wrong for a GUI application (it would open a
+black terminal window behind the tkinter window), so the real GUI spec almost
+certainly used \code{console=False}. Marking that explicitly \textbf{inferred}:
+nothing in the repo confirms it.
+
+There is a second, sharper reason to care. The GUI is riddled with debug
+\code{print} calls. Under \code{console=False} those prints go nowhere, and the
+\code{error} widget is only ever written on success. So the packaged client build,
+as best it can be reconstructed, had \textbf{no channel at all} for reporting a
+failure to its user. That is consistent with the previous section's finding: a
+matcher that silently produces zeros in a build that cannot report anything is a
+tool that can be wrong for a long time without anyone learning.
+\end{honest}
+
+\subsection{Dependencies}
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Package} & \textbf{Pin} & \textbf{Why} \\
+\midrule
+\code{pandas} & \code{>=2.0,<3.0} & Everything. Upper bound is load-bearing (below). \\
+\code{openpyxl} & \code{>=3.1,<4.0} & The XLSX engine pandas calls for \code{.xlsx} files. \\
+\code{tkinter} & (stdlib) & GUI and file pickers. Not pip-installable. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyidea}{Why \code{pandas<3} is not a lazy pin}
+Chained assignment (\code{df[col][row] = v}) and writing into filtered views are
+used throughout. Under pandas 3.0's copy-on-write these write to a temporary copy
+and the result is discarded, \textbf{without an error}. The tools would run, report
+success, and produce files with empty columns. The pin converts a silent
+correctness failure into a dependency constraint. It is the right call for code
+that is not going to be rewritten, and the README is honest that rewriting the
+loops as a \code{merge} is the actual fix.
+\end{keyidea}
+
+Note that \code{openpyxl} is required by the GUI only; the two CLI tools are pure
+CSV and never touch it.
+
+\subsection{Security review}
+
+\begin{keyidea}{Nothing to leak, and nothing leaked}
+This project has no credentials by construction: no API client, no tokens, no shop
+domain, no network calls of any kind. \file{.env.example} says so explicitly and
+\file{.gitignore} excludes \file{.env} regardless. A scan of the working tree
+found no keys, tokens, passwords or endpoints, and the git history was checked:
+the client's real stock list and product export were \textbf{never committed}, so
+there is nothing to scrub from history. The sample data is fabricated and the
+README says so. This is a clean repository, and the offline design is why.
+\end{keyidea}
+
+\section{Honest overall assessment}
+
+\subsection{What is genuinely good}
+
+\begin{itemize}
+  \item \textbf{The brand-filter insight.} Recognising that the join is ambiguous
+  and that \code{Brand} is the disambiguator is the piece of thinking the project
+  turns on. Filtering before joining removed a class of wrong match that no amount
+  of fuzzy title matching would have fixed. Verified: it works.
+  \item \textbf{The \code{Default Title} split.} Correctly reading Shopify's
+  export conventions, including that variant rows have an empty \code{Title},
+  is not obvious from the outside and is right.
+  \item \textbf{The \code{total width} fallback and the series-2xxxx cage rule.}
+  Both are fingerprints of someone who read the client's real data instead of
+  assuming its shape.
+  \item \textbf{Taking delivery seriously.} The GUI, the executables, the file
+  pickers and the non-overwrite counter exist because the user was a person, not a
+  terminal. The README is right that this took as much thought as the matching.
+  \item \textbf{The sample data.} Rebuilding a fabricated fixture with the same
+  column layout, the same HTML structure, and deliberate brand collisions, so the
+  tools still run and can be checked without exposing client data, is better than
+  most portfolio scrubs manage.
+\end{itemize}
+
+\subsection{What is weak}
+
+\begin{itemize}
+  \item \textbf{The GUI's quantity matcher does not match} on the shipped sample
+  (verified). This is the headline finding.
+  \item \textbf{Triplicated logic.} Three copies of two algorithms, already drifted
+  in at least two observable ways (the dtype bug, the string-versus-float column).
+  \item \textbf{No tests.} The sample data is a perfectly good fixture and there is
+  not a single assertion against it. Any one test on the GUI's matcher would have
+  caught the headline bug in 2023.
+  \item \textbf{Debug \code{print}s throughout}, in the version whose likely
+  packaging discards stdout.
+  \item \textbf{Error handling.} \code{save\_data} catches only
+  \code{FileNotFoundError}; \code{open\_file}'s retry loop cannot retry; nothing
+  writes failures to the status widget.
+  \item \textbf{Quadratic matching} and a full spreadsheet parse used as an
+  existence check.
+  \item \textbf{Brittle path handling}, splitting on a hard-coded \code{'/'}.
+  \item \textbf{Brittle extraction.} The line-pair assumption is the store's
+  template, not a guarantee, and the README says so.
+\end{itemize}
+
+\subsection{Verification status}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Claim} & \textbf{Status} \\
+\midrule
+CLI quantity/cost merge picks HI-TEC rows & \textbf{Verified by running it} \\
+CLI merge matches variants via \code{Option1 Value} & \textbf{Verified by running it} \\
+CLI dimensions extractor recovers all three & \textbf{Verified by running it} \\
+Dimensions extractor drops description-less rows & \textbf{Verified by running it} \\
+GUI quantity matcher matches nothing on the sample & \textbf{Verified by running its logic} \\
+GUI window builds and matches the screenshot & \textbf{Verified} (code against \file{app.png}) \\
+No credentials in tree or history & \textbf{Verified} \\
+GUI's real \file{.spec} used \code{console=False} & \textbf{Inferred}, not in repo \\
+Shopify import ignores absent rows & \textbf{Inferred}, not tested \\
+GUI bug's effect on the real 2023 data & \textbf{Unresolvable} from this repo \\
+1,600 stock rows / 11,000-line export & \textbf{Unverifiable}, data never committed \\
+End-to-end live store round trip (2023) & \textbf{Not re-verified}, as README says \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{If it were rebuilt}
+
+\begin{enumerate}
+  \item \textbf{One module, two frontends.} A \file{core.py} holds the three
+  operations as pure functions, each mapping a DataFrame to a DataFrame:
+  \code{merge\_quantities} for tool 1, then \code{extract\_dimensions} for tool 2,
+  then \code{detect\_variants} for the third. The CLI and the tkinter app both
+  import it. The headline bug in this repository is a direct consequence of
+  not doing this, which makes it the first thing to change.
+  \item \textbf{Replace the loops with a \code{merge}.} One
+  \code{pandas.merge} against the brand-filtered frame replaces both loops, is
+  linear rather than quadratic, removes every chained assignment, and lifts the
+  \code{pandas<3} pin as a side effect.
+  \item \textbf{Normalise join keys explicitly, on both sides.} The GUI bug is a
+  half-done version of exactly this: it normalised one side and not the other.
+  Cast both to trimmed lowercase strings, or neither.
+  \item \textbf{Distinguish ``no match'' from ``zero''.} A blank or \code{NaN},
+  never a \code{0}, in a column that feeds a live storefront's inventory.
+  \item \textbf{Test against the sample.} It is already an adversarial fixture.
+  Six assertions would pin every behaviour this document had to verify by hand.
+  \item \textbf{A dict, not parallel lists,} for the variant code tables.
+  \item \textbf{\code{pathlib} for paths, \code{os.path.exists} for existence,
+  \code{logging} instead of \code{print},} and a status widget that is written on
+  failure as well as success.
+\end{enumerate}
+
+\begin{keyidea}{The fair summary}
+Three small tools that solved a real and genuinely awkward problem for a real
+client, under a constraint (no API) that forced text matching on data with no
+shared key. The central idea is sound and verifiably works in the CLI tools. The
+delivered GUI is a copy-paste fork of them that carries at least one serious,
+silent bug, and the absence of both tests and a shared module is why that bug
+could exist unnoticed. The code is 2023 freelance work whose weaknesses the author
+has since named accurately in his own README; this document adds the one he had
+not found, and it is the most interesting thing here.
+\end{keyidea}
+
+\end{document}

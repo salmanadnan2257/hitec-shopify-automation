@@ -1,0 +1,293 @@
+% explainer-source-hash: 57bcbdec561bab334481f03dc7f1b4d5b8f071f1c30602f865e48dc1657f0e38
+% explainer-source-commit: 40e6ab02e9e59f22535727fa3f73442500a09963
+% explainer-generated: 2026-07-16
+% Regenerate with /explain-all (see WIRING.md). Do not edit this stamp by hand:
+% it is how the toolchain knows whether this document still matches the code.
+\documentclass[11pt,a4paper]{article}
+\input{preamble}
+
+\title{\textbf{Hi-Tec Shopify Automation}\\[0.3em]\large A Brief}
+\author{Portfolio explainer, built from the repository source}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+
+\section{What it is}
+
+Three small Python programs, written solo as freelance work for Hi-Tec Bearings in
+2023. The client sells bearings through a Shopify shop with thousands of product
+variants. The stock figures they trust live in a spreadsheet exported from their
+warehouse system; what the shop tells customers lives in a different spreadsheet
+exported from Shopify. Reconciling the two by hand took hours per cycle. These
+tools do it automatically.
+
+\begin{keyidea}{The defining constraint: no API}
+Nothing here talks to Shopify over the network. No API client, no access token, no
+shop domain. A human exports a spreadsheet from the Shopify admin, runs a tool,
+reviews the output, and re-imports it. Everything in the design follows from that.
+\end{keyidea}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm and 11mm]
+  \node[extbox] (store) {Shopify store};
+  \node[box, right=of store] (exp) {human exports};
+  \node[store, right=of exp] (csv) {export\\CSV / XLSX};
+  \node[box, right=of csv] (tool) {tool runs\\(offline)};
+  \node[store, right=of tool] (out) {\code{updated\_*}\\file};
+  \node[dec, right=of out] (rev) {human\\reviews};
+  \node[box, below=11mm of rev] (imp) {human re-imports};
+  \node[store, above=10mm of tool] (stock) {internal\\stock list};
+
+  \draw[flow] (store) -- (exp);
+  \draw[flow] (exp) -- (csv);
+  \draw[flow] (csv) -- (tool);
+  \draw[dflow] (stock) -- (tool);
+  \draw[flow] (tool) -- (out);
+  \draw[flow] (out) -- (rev);
+  \draw[flow] (rev) -- (imp);
+  \draw[flow] (imp) -| (store);
+\end{tikzpicture}}
+\caption{The round trip. The tools are one box; the human is four, and one of them
+is a review gate no catalogue change can skip.}
+\end{figure}
+
+The constraint costs and pays. It pays because a wrong result is a wrong
+spreadsheet rather than a wrong live storefront. It costs because without the API
+there are no stable product IDs to join on, only whatever text the export happens
+to contain. That is the whole engineering problem.
+
+\section{The three tools}
+
+\begin{center}
+\begin{tabular}{@{}p{4.5cm}p{4.0cm}p{5.5cm}@{}}
+\toprule
+\textbf{Tool} & \textbf{Does} & \textbf{Notes} \\
+\midrule
+\code{quantity\_pricing\_updater} & Merges warehouse quantity and average cost into a Shopify export & CLI. 69 lines. \textbf{Verified working.} \\
+\addlinespace
+\code{dimensions\_extractor} & Pulls bore / outside diameter / width out of HTML descriptions into columns & CLI. 83 lines. \textbf{Verified working}, with a row-dropping defect. \\
+\addlinespace
+\code{stock\_updater\_gui} & tkinter app: both of the above, plus variant detection, behind three buttons & 354 lines. The client's deliverable. \textbf{Carries a serious bug.} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Both CLI tools were shipped to the client as standalone Windows executables via
+PyInstaller, so no Python install was needed.
+
+\section{The central idea: matching without a key}
+
+\begin{keyidea}{Two tables, no shared column}
+The stock list has no Shopify ID. The Shopify export has no stock item number. The
+only thing in both is the bearing designation as text, e.g. \code{6205}. And it is
+not unique: \code{6205} appears once per brand, and only the \code{HI-TEC} row is
+the one to trust. \textbf{Filter by brand first, then join.} That single decision
+is what the project turns on.
+\end{keyidea}
+
+The join key then depends on the product's shape. Shopify gives every product at
+least one variant, labelling a variant-less product's row
+\code{Option1 Value = Default Title}. So:
+
+\begin{itemize}
+  \item \code{Default Title} rows: join on \code{Title}.
+  \item Variant rows: join on \code{Option1 Value}, because Shopify writes the
+  \code{Title} only on the first row of each product group and leaves it empty on
+  the rest.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\resizebox{0.92\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm and 13mm]
+  \node[store] (sl) {stock list};
+  \node[box, right=of sl] (filt) {filter\\\code{Brand=='HI-TEC'}};
+  \node[store, right=of filt] (hitec) {trusted rows};
+  \node[store, below=15mm of sl] (ss) {Shopify export};
+  \node[dec, right=of ss] (split) {\code{Default}\\\code{Title}?};
+  \node[box, above right=1mm and 11mm of split] (defl) {join on \code{Title}};
+  \node[box, below right=1mm and 11mm of split] (nond) {join on\\\code{Option1 Value}};
+  \node[box, right=34mm of split] (cat) {\code{concat}};
+  \node[store, right=of cat] (out) {+ \code{Updated Quantity}\\+ \code{Updated Cost}};
+  \draw[flow] (sl) -- (filt); \draw[flow] (filt) -- (hitec);
+  \draw[flow] (ss) -- (split);
+  \draw[flow] (split) -- node[lbl,above,sloped]{yes} (defl);
+  \draw[flow] (split) -- node[lbl,below,sloped]{no} (nond);
+  \draw[flow] (defl) -| (cat); \draw[flow] (nond) -| (cat);
+  \draw[flow] (cat) -- (out);
+  \draw[dflow] (hitec) -- (defl);
+\end{tikzpicture}}
+\caption{Brand filter, then a split on the \code{Default Title} sentinel to choose
+the join key.}
+\end{figure}
+
+\textbf{Verified by running it.} The shipped sample deliberately includes trap
+rows: \code{6205} and \code{6304 2RS} each have a competing \code{OTHER} brand row
+with different figures. The tool takes the HI-TEC figures for both, and matches
+both variant rows through \code{Option1 Value} including the one with a blank
+\code{Title}. The README's main claim about this tool is true.
+
+\section{The second idea: data locked in HTML}
+
+Bearing dimensions existed only as an HTML table inside each product's description,
+so the storefront could not filter on them. The extractor lowercases the
+description, strips every tag with the regex \code{<.*?>}, splits on newlines,
+drops blanks, and then relies on one assumption: \textbf{a label line is
+immediately followed by its value line}, so \code{['bore diameter', '25']} are
+adjacent. Find the label, take the next line.
+
+It works, and it recovered all three dimensions from every sample row that had a
+description. It is also brittle by construction: it rides on the store's exact
+description template and would silently miss dimensions on any other layout. The
+README says this plainly and is right to.
+
+One detail worth knowing: a \code{total width} fallback exists for products that
+label the field differently. That line is domain knowledge learned from the real
+catalogue, not something anyone would write from first principles.
+
+\section{Findings}
+
+\begin{honest}{The GUI's quantity matcher matches nothing on the shipped sample}
+The GUI is not a wrapper around the two CLI tools; it is a copy of them, and the
+copies have drifted. The GUI has one line its CLI sibling lacks:
+
+\begin{lstlisting}[language=Python]
+stock_list['Item'] = stock_list['Item'].apply(convert_int_float)
+\end{lstlisting}
+
+It is meant to normalise types. It does two damaging things. \code{'6205'} becomes
+the float \code{6205.0}, which never compares equal to the string \code{'6205'} in
+the Shopify \code{Title} column. And \code{'22210 K'} cannot parse as a float, so
+the function falls through to a bare \code{pass}, returns \code{None}, and pandas
+stores \code{nan}: every alphanumeric designation, meaning every variant, is
+destroyed.
+
+Running the GUI's exact matching logic against the sample: \textbf{0 of 4}
+default-title matches, \textbf{0 of 2} variant matches. The CLI matches all six.
+The GUI would write zeros for every product, report ``Quantity and Pricing has been
+updated!'' in green, and save the file.
+
+\textbf{Scope, stated precisely.} What is verified is the failure on the sample in
+this repository. Whether it failed on the client's real 2023 files is
+\textbf{unresolvable from this repo}, because it depends on the dtypes pandas
+inferred from data that is no longer here. If the real columns were purely numeric
+the line was harmless; if either contained one alphanumeric designation, and the
+sample says the real catalogue was full of them, the match collapses exactly as it
+does here. The second is far more likely.
+
+The honest position, and a strong one: the CLI implementation is correct and
+verifiably so; the GUI copy carries a well-understood dtype bug; and that bug is
+the direct, predictable consequence of the code duplication the README already
+names as the project's main design regret. The fix is two lines.
+\end{honest}
+
+\begin{honest}{The ``11,000-line Shopify export'' is not in this repository}
+The README says, correctly and in the past tense, that the original repo held the
+client's real data (about 1,600 stock rows and an 11,000-line Shopify export) and
+that it was removed. Checked: what is actually here is a fabricated sample of
+\textbf{8 stock rows} and \textbf{6 product rows} (117 physical lines, since the
+HTML descriptions span many lines each).
+
+So those figures rest entirely on the owner's recollection. Git history confirms
+the real data was \textbf{never committed}, so it cannot be recovered from history
+either. Good for confidentiality; it also means the numbers are unverifiable by
+anyone without the original client files. Not an accusation that they are wrong, a
+note that they are the one class of claim here that cannot be defended by pointing
+at code. The sample demonstrates correctness, at six rows. It does not demonstrate
+scale.
+\end{honest}
+
+\begin{honest}{The dimensions extractor deletes rows from its own output}
+\code{df = df.dropna(subset=['Body (HTML)'])} removes every row without a
+description. Since Shopify writes product-level fields only on the first row of a
+product group, that is most variant rows. Verified: 6 rows in, 5 rows out; the
+\code{22210 E} variant vanished. The tool's stated contract is ``adds three
+columns''; its behaviour is ``adds three columns and silently drops rows''. The
+one-line fix is to filter the loop's iteration source rather than the frame.
+\end{honest}
+
+\begin{honest}{Smaller, but real}
+\begin{itemize}
+  \item \code{save\_data} uses a full \code{read\_excel} parse as an existence
+  check, and catches only \code{FileNotFoundError}. The previous output being open
+  in Excel raises \code{PermissionError} instead, which is uncaught. For a client
+  who lives in Excel, that is the likeliest real-world failure.
+  \item \code{open\_file}'s retry loop cannot retry: both \code{if} branches
+  return. Cancelling the dialog yields an empty path and an unhandled exception.
+  \item Nothing writes to the status widget on failure, only on success.
+  \item Matching is $O(n \times m)$: the stock list is re-filtered and re-listed on
+  every Shopify row. One \code{merge} would be linear and shorter.
+  \item The \code{Seal Type} mapping is three-quarters a no-op: only \code{2rs} is
+  translated, the rest map to themselves.
+  \item An unmatched product gets \code{Updated Quantity = 0}, indistinguishable
+  from genuinely out of stock, in a column that feeds a live storefront.
+  \item Debug \code{print}s throughout, in the version whose likely packaging
+  (\code{console=False}, \textbf{inferred}: the GUI's \file{.spec} is absent)
+  discards stdout entirely.
+  \item No tests, though the sample data is already an adversarial fixture.
+\end{itemize}
+\end{honest}
+
+\begin{keyidea}{Security: clean, by construction}
+No credentials exist in this project because none can: no API client, no tokens, no
+shop domain, no network calls. \file{.env.example} declares that nothing is needed.
+A scan of the tree found nothing, and git history was checked: the client's real
+data was never committed, so there is nothing to scrub. The sample is fabricated
+and the README says so.
+\end{keyidea}
+
+\section{What is genuinely good}
+
+\begin{itemize}
+  \item \textbf{The brand-filter insight.} Seeing that the join is ambiguous and
+  that \code{Brand} is the disambiguator is the thinking the project turns on. It
+  removed a class of wrong match no fuzzy title matching would have fixed.
+  \item \textbf{Reading Shopify's export conventions correctly}, including the
+  \code{Default Title} sentinel and the empty \code{Title} on variant rows.
+  \item \textbf{Domain knowledge that came from the data}, not from assumptions:
+  the \code{total width} fallback, and a series-2xxxx rule in the variant detector
+  that deliberately overrides the cage lookup table.
+  \item \textbf{Delivery treated as a real requirement.} The GUI, the executables,
+  the file pickers, and a non-overwrite save that bumps a counter exist because the
+  user was a person rather than a terminal.
+  \item \textbf{An honest scrub.} Replacing client data with a fabricated fixture
+  that keeps the same column layout, the same HTML structure, and deliberate brand
+  collisions, so the tools still run and can be verified, is better than most
+  portfolio scrubs manage.
+\end{itemize}
+
+\section{What was verified, and what could not be}
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+CLI merge picks HI-TEC rows, matches variants & \textbf{Verified by running it} \\
+CLI extractor recovers all three dimensions & \textbf{Verified by running it} \\
+Extractor drops description-less rows & \textbf{Verified by running it} \\
+GUI matcher matches nothing on the sample & \textbf{Verified by running its logic} \\
+GUI window matches the shipped screenshot & \textbf{Verified} \\
+No credentials in tree or history & \textbf{Verified} \\
+GUI's real \file{.spec} used \code{console=False} & \textbf{Inferred}, not in repo \\
+Shopify import ignores absent rows & \textbf{Inferred}, not tested \\
+GUI bug's effect on the real 2023 data & \textbf{Unresolvable} from this repo \\
+1,600 stock rows / 11,000-line export & \textbf{Unverifiable}, never committed \\
+End-to-end live round trip (2023) & \textbf{Not re-verified}, as README says \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{keyidea}{The fair summary}
+Three small tools that solved a real and genuinely awkward problem under a
+constraint that forced text matching on data with no shared key. The central idea
+is sound and verifiably works in the CLI tools. The delivered GUI is a copy-paste
+fork that carries a serious silent bug, and the absence of both tests and a shared
+module is exactly why that bug could survive unnoticed. The author has already
+named most of this project's weaknesses accurately in his own README; the GUI
+matcher is the one he had not found, and it is the most interesting thing here.
+\end{keyidea}
+
+\end{document}
